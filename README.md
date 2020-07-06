@@ -7,4 +7,12 @@ Python colorized logging working with tqdm
 Just
 ```python
 import tqdm_color_logging
+
+tqdm_color_logging.basicConfig(...)
+```
+instead of
+```python
+import logging
+
+logging.basicConfig(...)
 ```
