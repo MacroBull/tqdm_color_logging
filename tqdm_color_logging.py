@@ -8,21 +8,22 @@ Created on Fri Jan  4 14:07:51 2019
 
 from __future__ import absolute_import, division, unicode_literals
 
-import logging, re
+import logging
+
+
+### TqdmHandler ###
 
 
 try:
     try:
-        __IPYTHON__
+        __IPYTHON__ # throw NameError
     except NameError:
         __IPYTHON__ = False
 
+    from tqdm import tqdm # throw ImportError
+
     class TqdmHandler(logging.StreamHandler):
         r"""tqdm logging stream"""
-
-        from sys import stderr
-
-        from tqdm import tqdm
 
         def __init__(self,
                      *args, **kwargs):
@@ -30,16 +31,25 @@ try:
 
         def emit(self, record,
                  *args, **kwargs):
-            msg = self.format(record, *args, **kwargs)
-            self.tqdm.write(msg, file=self.stderr) # output to stderr
+            try:
+                msg = self.format(record, *args, **kwargs)
+                tqdm.write(msg, file=self.stream)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except:
+                self.handleError(record)
 
-    default_handler_cls = TqdmHandler
 except ImportError:
-    default_handler_cls = logging.StreamHandler
+    default_stream_handler_cls = logging.StreamHandler
+else:
+    default_stream_handler_cls = TqdmHandler
+
+
+### colored ###
 
 
 try:
-    from termcolor import colored
+    from termcolor import colored # throw ImportError
 except ImportError:
     ATTRIBUTES = dict(zip(
             (
@@ -65,7 +75,7 @@ except ImportError:
                 'on_white',
             ), range(40, 48)
             ))
-    COLORS = dict(zip(
+    COLORS     = dict(zip(
             (
                 'grey',
                 'red',
@@ -77,86 +87,102 @@ except ImportError:
                 'white',
             ), range(30, 38)
             ))
-    RESET = '\033[0m'
+
+    COLORED = '\033[%dm%s'
+    RESET   = '\033[0m'
 
     del ATTRIBUTES['']
 
     import os
 
     def colored(text,
-                # *args, # py3
+                # *args,
                 color=None, on_color=None,
                 attrs=None): # ->str:
         r"""colorize text(copied from termcolor)"""
 
         if not os.getenv('ANSI_COLORS_DISABLED'):
-            fmt_str = '\033[%dm%s'
             reset = False
             if color is not None:
-                text = fmt_str % (COLORS[color], text)
+                text = COLORED % (COLORS[color], text)
                 reset = True
 
             if on_color is not None:
-                text = fmt_str % (HIGHLIGHTS[on_color], text)
+                text = COLORED % (HIGHLIGHTS[on_color], text)
                 reset = True
 
-            if attrs is not None:
+            if attrs:
                 for attr in attrs:
-                    text = fmt_str % (ATTRIBUTES[attr], text)
-                    reset = True
+                    text = COLORED % (ATTRIBUTES[attr], text)
+                reset = True
 
             if reset:
                 text += RESET
         return text
 
 
+### ColoredFormatter ###
+
+
 class ColoredFormatter(logging.Formatter):
     r"""ColoredFormatter"""
 
     PERCENT_STYLE_PATTERN = r'%\({}\)[\<\>\=\^]?[\+\- ]?\d*\.?\d*\w'
-    TIME_COLOR = 'cyan'
-    LEVEL_COLOR = {
+
+    NAME_COLOR     = 'white'
+    PATH_COLOR     = 'white'
+    TIME_COLOR     = 'cyan'
+    PROCESS_COLOR  = 'magenta'
+    LEVEL_COLOR    = {
             'CRITICAL': 'white',
             'ERROR': 'white',
             'WARNING': 'yellow',
             'INFO' : 'green',
             'DEBUG': 'blue',
             'NOTSET': 'magenta',
-    }
+            }
     LEVEL_ON_COLOR = {
             'CRITICAL': 'on_red',
             'ERROR': 'on_red',
-    }
-    BLINK_LEVELS = ['CRITICAL', 'WARNING']
+            }
+
+    BLINK_LEVELS = {'CRITICAL', 'WARNING'}
+
+    import re
 
     @classmethod
-    def colored_fmt(
-            cls, fmt, key,
-            **kwargs): # ->str:
+    def colored_fmt(cls, fmt, key,
+                    **kwargs): # ->str:
         r"""format with color"""
 
-        ret = ''
+        res = []
         pos = 0
-        for match in re.finditer(cls.PERCENT_STYLE_PATTERN.format(key), fmt):
-            ret += fmt[pos:match.start()]
-            ret += colored(match.group(), **kwargs)
+        for match in cls.re.finditer(cls.PERCENT_STYLE_PATTERN.format(key), fmt):
+            res.append(fmt[pos:match.start()])
+            res.append(colored(match.group(), **kwargs))
             pos = match.end()
-        ret += fmt[pos:]
-        return ret
+        res.append(fmt[pos:])
+        return ''.join(res)
 
     def __init__(self,
                  fmt=None, datefmt=None,
-                 # *args, # py3
-                 color=True, color_level=True, color_time=True,
-                 bold=True, bold_name=True,
-                 bold_level=True, bold_message=True,
-                 underline=True, underline_time=False, underline_path=True,
-                 blink=True, blink_bad_level=True,
+                 # *args,
+                 color=True,
+                 color_name=True, color_level=True, color_path=True,
+                 color_time=True, color_process=True,
+                 bold=True,
+                 bold_name=True, bold_level=True, bold_message=True,
+                 underline=True,
+                 underline_path=True, underline_time=False,
+                 blink=True,
+                 blink_bad_level=True,
                  **kwargs):
 
-        if isinstance(fmt, basestring):
+        if fmt is not None:
             # name
             color_, on_color, attrs = None, None, set()
+            if color and color_name:
+                color_ = self.NAME_COLOR
             if bold and bold_name:
                 attrs.add('bold')
             fmt = self.colored_fmt(fmt, 'name', color=color_, on_color=on_color, attrs=attrs)
@@ -172,6 +198,8 @@ class ColoredFormatter(logging.Formatter):
 
             # pathname
             color_, on_color, attrs = None, None, set()
+            if color and color_path:
+                color_ = self.PATH_COLOR
             if underline and underline_path:
                 attrs.add('underline')
             fmt = self.colored_fmt(
@@ -179,6 +207,8 @@ class ColoredFormatter(logging.Formatter):
 
             # filename
             color_, on_color, attrs = None, None, set()
+            if color and color_path:
+                color_ = self.PATH_COLOR
             if underline and underline_path:
                 attrs.add('underline')
             fmt = self.colored_fmt(
@@ -186,13 +216,22 @@ class ColoredFormatter(logging.Formatter):
 
             # module
 
-            #
+            # lineno
             color_, on_color, attrs = None, None, set()
+            if color and color_path:
+                color_ = self.PATH_COLOR
             if underline and underline_path:
                 attrs.add('underline')
             fmt = self.colored_fmt(fmt, 'lineno', color=color_, on_color=on_color, attrs=attrs)
 
             # funcName
+            color_, on_color, attrs = None, None, set()
+            if color and color_name:
+                color_ = self.NAME_COLOR
+            if bold and bold_name:
+                attrs.add('bold')
+            fmt = self.colored_fmt(
+                    fmt, 'funcName', color=color_, on_color=on_color, attrs=attrs)
 
             # created
             color_, on_color, attrs = None, None, set()
@@ -232,6 +271,10 @@ class ColoredFormatter(logging.Formatter):
             # threadName
 
             # process
+            color_, on_color, attrs = None, None, set()
+            if color and color_process:
+                color_ = self.PROCESS_COLOR
+            fmt = self.colored_fmt(fmt, 'process', color=color_, on_color=on_color, attrs=attrs)
 
             # message
             color_, on_color, attrs = None, None, set()
@@ -243,12 +286,12 @@ class ColoredFormatter(logging.Formatter):
 
         # internal API check
         if hasattr(self, '_style'):
-            assert kwargs.get('style', '%') == '%' and hasattr(self._style, '_fmt'), (
-                    'unsupported logging version: %s' % (logging.__version__, )
+            assert hasattr(self._style, '_fmt'), (
+                    'unsupported logging version(%s)' % (logging.__version__, )
                     ) # python3 API: logging 0.5
         else:
             assert hasattr(self, '_fmt'), (
-                    'unsupported logging version: %s' % (logging.__version__, )
+                    'unsupported logging version(%s)' % (logging.__version__, )
                     ) # python2 API: logging 0.5
 
         self.color_level = color and color_level
@@ -259,9 +302,7 @@ class ColoredFormatter(logging.Formatter):
         fmt = orig_fmt = self._fmt
 
         # levelname
-        color = None
-        on_color = None
-        attrs = set()
+        color, on_color, attrs = None, None, set()
         levelname = record.levelname
         if self.color_level:
             color = self.LEVEL_COLOR.get(levelname, color)
@@ -285,55 +326,71 @@ class ColoredFormatter(logging.Formatter):
         return msg
 
 
-# (%(asctime)s.%(msecs)03d)
+### ColoredLogger ###
+
+
+# detail time: (%(asctime)s.%(msecs)03d)
 config = {
-        'format': '[%(levelname)8s](%(asctime)8s)'
-            '%(name)s::%(funcName)s:%(lineno)4d: %(message)s',
+        'format': '[%(levelname)8s](%(asctime)8s)<%(process)5d> '
+            '%(name)s::%(funcName)s @ %(filename)s:%(lineno)d: %(message)s',
         'datefmt': '%H:%M:%S',
-}
+        }
 
 
-def basicConfig(*args, **kwargs):
+def basicConfig(
+        format=None, datefmt=None, level=None,
+        stream=None, streamLevel=None, filename=None, fileLevel=None,
+        filemode='a', encoding=None, backupCount=0, maxBytes=0, when='h',
+        **kwargs):
     r"""'logging.basicConfig' override"""
 
-    config['format'] = kwargs.get('format', config['format'])
-    config['datefmt'] = kwargs.get('datefmt', config['datefmt'])
-    logging.basicConfig(*args, **kwargs)
+    if format:
+        config['format'] = format
+    if datefmt:
+        config['datefmt'] = datefmt
 
+    if 'handlers' in kwargs:
+        return logging.basicConfig(format=format, datefmt=datefmt, level=level, **kwargs)
 
-class ColoredLogger(logging.Logger):
-    r"""custom 'logger' class with multiple destinations and tqdm + colored support"""
-
-    _global_handler_infos = [] # shared instances
-
-    @classmethod
-    def add_global_handler(
-            cls, handler,
-            share_formatter=False):
-        cls._global_handler_infos.append((handler, share_formatter))
-
-    def __init__(self,
-                 *args, **kwargs):
-        super(ColoredLogger, self).__init__(*args, **kwargs)
-        self.propagate = False
-        formatter = ColoredFormatter(fmt=config['format'], datefmt=config['datefmt'])
-
-        for handler, share_formatter in self._global_handler_infos:
-            if share_formatter:
-                handler.setFormatter(formatter) # shared formatter
-            self.addHandler(handler)
-
-        handler = default_handler_cls()
-        handler.setFormatter(formatter)
-        self.addHandler(handler)
-
-
-# override default loggig logger class
-logging.setLoggerClass(ColoredLogger)
+    has_lock_api = hasattr(logging, '_acquireLock') and hasattr(logging, '_releaseLock')
+    has_lock_api and logging._acquireLock()
+    try:
+        if len(logging.root.handlers) == 0:
+            if stream or (filename is None):
+                handler = default_stream_handler_cls()
+                handler.setFormatter(ColoredFormatter(
+                        fmt=config['format'], datefmt=config['datefmt']))
+                if streamLevel is not None:
+                    level = min(level or streamLevel, streamLevel)
+                    handler.setLevel(streamLevel)
+                logging.root.addHandler(handler)
+            if filename:
+                if backupCount > 0:
+                    if maxBytes > 0:
+                        handler = logging.handlers.RotatingFileHandler(
+                            filename,
+                            mode=filemode, maxBytes=maxBytes, backupCount=backupCount,
+                            encoding=encoding)
+                    else:
+                        handler = logging.handlers.TimedRotatingFileHandler(
+                            filename,
+                            when=when, backupCount=backupCount, encoding=encoding)
+                else:
+                    handler = logging.FileHandler(filename, mode=filemode, encoding=encoding)
+                handler.setFormatter(logging.Formatter(
+                        fmt=config['format'], datefmt=config['datefmt']))
+                if fileLevel is not None:
+                    level = min(level or fileLevel, fileLevel)
+                    handler.setLevel(fileLevel)
+                logging.root.addHandler(handler)
+            if level is not None:
+                logging.root.setLevel(level)
+    finally:
+        has_lock_api and logging._releaseLock()
 
 
 if __name__ == '__main__':
-    logger = logging.getLogger("sample1")
+    logger = logging.getLogger('sample1')
     logger.setLevel(logging.DEBUG)
     logger.critical('critical')
     logger.fatal('fatal')
@@ -342,15 +399,18 @@ if __name__ == '__main__':
     logger.info('info')
     logger.debug('debug')
 
-    FORMAT = '[%(levelname)8s]%(name)s: %(message)s'
-    basicConfig(format=FORMAT, level=logging.DEBUG)
+    import sys
 
-    ColoredLogger.add_global_handler(logging.FileHandler('/tmp/test.log'), share_formatter=True)
+    FORMAT = '[%(levelname)8s]%(name)s: %(message)s'
+    basicConfig(format=FORMAT, level=logging.DEBUG, stream=sys.stderr, filename='/tmp/test.log')
+
+    from tqdm import tqdm
 
     logger = logging.getLogger('sample2')
-    logger.critical('critical')
-    logger.fatal('fatal')
-    logger.error('error')
-    logger.warning('warning')
-    logger.info('info')
-    logger.debug('debug')
+    for idx in tqdm(range(9), write_bytes=False):
+        logger.critical('critical')
+        logger.fatal('fatal')
+        logger.error('error')
+        logger.warning('warning')
+        logger.info('info')
+        logger.debug('debug')
